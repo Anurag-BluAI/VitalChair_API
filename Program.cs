@@ -19,19 +19,27 @@ class UnifiedDataLogger
     private static float lastTemperature1 = 0;
     private static float lastTemperature2 = 0;
     private static int lastPulseRate = 0;
+    private static int lastPulseRate2 = 0;
     private static int lastSpO2 = 0;
     private static int lastSys = 0;
     private static int lastDia = 0;
     private static int lastMean = 0;
 
+
     static void Main()
     {
         InitializeSerialPort("/dev/verdin-uart1", 115200);
+
+
+        
 
         try
         {
             _serialPort.Open();
             Console.WriteLine("Unified Data Logger Started (SPO2, Pulse Rate, Temperature & NIBP Frames)");
+            SendRequestPOST();
+            StartNiBP();
+
 
             var buffer = new byte[4096];
             while (true)
@@ -72,6 +80,36 @@ class UnifiedDataLogger
             Encoding = System.Text.Encoding.Default
         };
     }
+
+// Send RequestPOST frame (ID = 0x40, CHECKSUM = 0xC0) - Only once on startup
+static void SendRequestPOST()
+{
+    byte[] postRequestFrame = new byte[] { 0x40, 0xC0 };
+    try
+    {
+        _serialPort.Write(postRequestFrame, 0, postRequestFrame.Length);
+        Console.WriteLine("RequestPOST frame sent successfully (Startup).");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error sending RequestPOST frame: {ex.Message}");
+    }
+}
+
+// Send RequestPOST frame (ID = 0x40, CHECKSUM = 0xC0) - Only once on startup
+static void StartNiBP()
+{
+    byte[] postRequestFrame = new byte[] { 0x55, 0xd5};
+    try
+    {
+        _serialPort.Write(postRequestFrame, 0, postRequestFrame.Length);
+        Console.WriteLine("Measuring Nibp Please relax.");
+    }
+    catch (Exception ex)
+    {
+        Console.WriteLine($"Error sending RequestPOST frame: {ex.Message}");
+    }
+}
 
     static void ProcessRawData(byte[] data, int length)
     {
@@ -188,7 +226,7 @@ static void DecodeAndPrintNIBPResult2(byte[] data, int startIndex)
     int prLow = (prLowBit << 7) | (data[startIndex + 3] & 0x7F);
     int pr = (prHigh << 8) | prLow;
 
-    lastPulseRate = (pr >= 40 && pr <= 250) ? pr : -100;
+    lastPulseRate2 = (pr >= 40 && pr <= 250) ? pr : -100;
 
     PrintUnifiedData();
 }
@@ -207,6 +245,6 @@ static void DecodeAndPrintNIBPResult2(byte[] data, int startIndex)
     // Display combined output
     static void PrintUnifiedData()
     {
-        Console.WriteLine($"Temp1: {lastTemperature1:F1}°C | Temp2: {lastTemperature2:F1}°C | Pulse Rate: {lastPulseRate} BPM | SpO2: {lastSpO2}% | Sys: {lastSys} mmHg | Dia: {lastDia} mmHg | Mean: {lastMean} mmHg | Pulse: {lastPulseRate}");
+        Console.WriteLine($"Temp1: {lastTemperature1:F1}°C | Temp2: {lastTemperature2:F1}°C | Pulse Rate: {lastPulseRate} BPM | SpO2: {lastSpO2}% | Sys: {lastSys} mmHg | Dia: {lastDia} mmHg | Mean: {lastMean} mmHg | Pulse: {lastPulseRate2}");
     }
 }
