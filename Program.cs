@@ -1,4 +1,3 @@
-
 using System;
 using System.Collections.Generic;
 using System.IO.Ports;
@@ -36,7 +35,7 @@ class UnifiedDataLogger
     private static float lastHeight = -1;
     private static float lastWeight = -1;
 
-    // Stored values for SUBMIT
+    // Stored values for DONE
     private static float storedTemperature1 = 0;
     private static float storedTemperature2 = 0;
     private static float storedHeight = -1;
@@ -73,7 +72,7 @@ class UnifiedDataLogger
             _serialPortHeight.Open();
 
             Console.WriteLine("Unified Data Logger Started");
-            Console.WriteLine("Commands: START, NEXT, BACK, START BP, STOP BP, DONE, SUBMIT, HOME, INSIGHTS, LIVE");
+            Console.WriteLine("Commands: START, NEXT, BACK, START BP, STOP BP, DONE, HOME, LIVE");
 
             // Start command reading thread
             Thread commandThread = new Thread(ReadCommands);
@@ -221,7 +220,7 @@ class UnifiedDataLogger
                         if (_currentState == MeasurementState.NIBP || _isLiveMode)
                         {
                             _isNIBPActive = false;
-                            Console.WriteLine("Stopped NIBP measurement.");
+                            StopNiBP();
                         }
                         break;
                     case "DONE":
@@ -229,14 +228,11 @@ class UnifiedDataLogger
                         {
                             StoreNIBP();
                             _currentState = MeasurementState.DONE;
-                            Console.WriteLine("Measurements complete. Use 'SUBMIT', 'INSIGHTS', or 'HOME'.");
-                        }
-                        break;
-                    case "SUBMIT":
-                        if (_currentState == MeasurementState.DONE && !_isLiveMode)
-                        {
+                            Console.WriteLine("Measurements complete. Final results and AI analysis:");
                             PrintStoredData();
                             SendVitalsToBluHealth().GetAwaiter().GetResult();
+                            GetAzureInsights().GetAwaiter().GetResult();
+                            Console.WriteLine("Use 'HOME' to start over.");
                         }
                         break;
                     case "HOME":
@@ -246,12 +242,6 @@ class UnifiedDataLogger
                             ResetStoredValues();
                             Console.WriteLine("Returning to Height/Weight measurement...");
                             SendHeightWeightCommand();
-                        }
-                        break;
-                    case "INSIGHTS":
-                        if (_currentState == MeasurementState.DONE && !_isLiveMode)
-                        {
-                            GetAzureInsights().GetAwaiter().GetResult();
                         }
                         break;
                     case "LIVE":
@@ -268,7 +258,6 @@ class UnifiedDataLogger
 
     static void SendHeightWeightCommand()
     {
-        // Placeholder: Send command to height/weight device if required
         Console.WriteLine("Height/Weight measurement initiated.");
     }
 
@@ -330,7 +319,6 @@ class UnifiedDataLogger
             }
             catch (TimeoutException)
             {
-                // No data, continue looping
             }
             catch (Exception ex)
             {
@@ -365,6 +353,20 @@ class UnifiedDataLogger
         catch (Exception ex)
         {
             Console.WriteLine($"Error starting NIBP: {ex.Message}");
+        }
+    }
+
+    static void StopNiBP()
+    {
+        byte[] nibpStopFrame = new byte[] { 0x56 };
+        try
+        {
+            _serialPortData.Write(nibpStopFrame, 0, nibpStopFrame.Length);
+            Console.WriteLine("Stopped NIBP Measurement.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error stopping NIBP: {ex.Message}");
         }
     }
 
@@ -404,8 +406,8 @@ class UnifiedDataLogger
 
         lock (_lock)
         {
-            lastTemperature1 = ((temp1High << 8) | temp1Low) / 10.0f - 13.0f;
-            lastTemperature2 = ((temp2High << 8) | temp2Low) / 10.0f - 13.0f;
+            lastTemperature1 = ((temp1High << 8) | temp1Low) / 10.0f;
+            lastTemperature2 = ((temp2High << 8) | temp2Low) / 10.0f;
             if (_currentState == MeasurementState.TEMPERATURE)
             {
                 PrintTemperature();
@@ -627,20 +629,26 @@ class UnifiedDataLogger
     {
         using HttpClient httpClient = new HttpClient();
 
-        // Prepare the vitals data payload
         var payload = new
         {
             patient_id = 2830,
             body_temperature = storedTemperature1.ToString("F1"),
-            body_temperature2 = storedTemperature2.ToString("F1"),
-            IR_temperature = "0", // Not measured
             pulse_rate = storedPulseRate.ToString(),
             respiration_rate = "0", // Not measured
             blood_pressure_systolic = storedSys.ToString(),
             blood_pressure_diastolic = storedDia.ToString(),
             blood_oxygen = storedSpO2.ToString(),
+            weight = storedWeight.ToString("F1"),
+            height = storedHeight.ToString("F1"),
+            bmi = storedBMI >= 0 ? storedBMI.ToString("F1") : "0",
             blood_glucose_level = "0", // Not measured
-            bmi = storedBMI >= 0 ? storedBMI.ToString("F1") : "0"
+            blood_glucose_fasting = "0", // Not measured
+            temperature = new
+            {
+                TEMP1 = storedTemperature1.ToString("F1"),
+                TEMP2 = storedTemperature2.ToString("F1"),
+                IR = storedTemperature1.ToString("F1") // Assuming IR same as TEMP1; adjust if separate sensor
+            }
         };
 
         string jsonPayload = JsonSerializer.Serialize(payload);
@@ -648,7 +656,6 @@ class UnifiedDataLogger
 
         try
         {
-            // Send data to BluHealth
             HttpResponseMessage response = await httpClient.PostAsync(BluHealthVitalsUrl, content);
             if (response.IsSuccessStatusCode)
             {
@@ -667,7 +674,6 @@ class UnifiedDataLogger
 
     static async Task GetAzureInsights()
     {
-        // Prepare the vitals data payload
         var payload = new
         {
             patient_id = 2822,
@@ -687,7 +693,6 @@ class UnifiedDataLogger
 
         try
         {
-            // Analyze data using Azure OpenAI
             string azureResponse = await SendToAzureOpenAi(AzureOpenAiUrl, AzureApiKey, jsonPayload);
             if (!string.IsNullOrEmpty(azureResponse))
             {
@@ -707,12 +712,11 @@ class UnifiedDataLogger
         using HttpClient httpClient = new HttpClient();
         httpClient.DefaultRequestHeaders.Add("api-key", apiKey);
 
-        // Prepare the request body
         var requestBody = new
         {
             messages = new[]
             {
-                new { role = "system", content = "You are an AI medical assistant. Analyze the patient's vital data and provide recommendations." },
+                new { role = "system", content = "You are an AI medical assistant. Analyze the patient's vital data and provide a concise, positive, and motivational health summary. Format the response with the following sections: ### Vital Data Analysis: (summarize the vitals and their health implications), ### Recommendations: (suggest actions to maintain or improve health), ### Conclusion: (a motivational closing statement encouraging the user to check their BluHealth Dashboard for more insights). Use the given input health metrics." },
                 new { role = "user", content = payload }
             },
             max_tokens = 1000,
@@ -747,7 +751,6 @@ class UnifiedDataLogger
     {
         if (string.IsNullOrEmpty(rawContent)) return "No insights available.";
 
-        // Clean the response
         string cleanedContent = rawContent;
         cleanedContent = Regex.Replace(cleanedContent, @"```json", "");
         cleanedContent = Regex.Replace(cleanedContent, @"```", "");
@@ -759,10 +762,9 @@ class UnifiedDataLogger
             var responseJson = JsonSerializer.Deserialize<JsonElement>(cleanedContent);
             var content = responseJson.GetProperty("choices")[0].GetProperty("message").GetProperty("content").ToString();
 
-            // Extract relevant sections
-            var vitalDataAnalysis = ExtractSection(content, "Vital Data Analysis");
-            var recommendations = ExtractSection(content, "Recommendations");
-            var conclusion = ExtractSection(content, "Conclusion");
+            var vitalDataAnalysis = ExtractSection(content, "Vital Data Analysis") ?? ExtractSection(content, "Analysis") ?? "No analysis available.";
+            var recommendations = ExtractSection(content, "Recommendations") ?? "No recommendations available.";
+            var conclusion = ExtractSection(content, "Conclusion") ?? ExtractFallbackConclusion(content);
 
             return $"Health Insights:\n{vitalDataAnalysis}\n\nRecommendations:\n{recommendations}\n\nConclusion:\n{conclusion}";
         }
@@ -775,8 +777,18 @@ class UnifiedDataLogger
 
     static string ExtractSection(string content, string sectionTitle)
     {
-        var regex = new Regex($@"### {sectionTitle}:(.*?)###", RegexOptions.Singleline);
+        var regex = new Regex($@"### {sectionTitle}:(.*?)(###|$)", RegexOptions.Singleline);
         var match = regex.Match(content);
-        return match.Success ? match.Groups[1].Value.Trim() : "No data available.";
+        return match.Success ? match.Groups[1].Value.Trim() : null;
+    }
+
+    static string ExtractFallbackConclusion(string content)
+    {
+        var paragraphs = content.Split(new[] { "\n\n" }, StringSplitOptions.RemoveEmptyEntries);
+        if (paragraphs.Length > 0)
+        {
+            return paragraphs.Last().Trim();
+        }
+        return "Check your BluHealth Dashboard for more insights.";
     }
 }
