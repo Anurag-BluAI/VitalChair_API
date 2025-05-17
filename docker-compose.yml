@@ -8,19 +8,24 @@ services:
     image: ${LOCAL_REGISTRY}:5002/vitaldata-debug:${TAG}
     ports:
       - ${DEBUG_SSH_PORT}:${DEBUG_SSH_PORT}
-    device_cgroup_rules:
-      - "c 254:* rmw"
+    devices:
+      - "/dev/verdin-uart1:/dev/verdin-uart1"
+      - "/dev/verdin-uart2:/dev/verdin-uart2"
     volumes:
       - type: bind
         source: /dev
         target: /dev
+    device_cgroup_rules:
+      - "c 207:* rmw"  # Add rule for UART devices (major number 207)
 
   vitaldata:
     build:
       context: .
       dockerfile: Dockerfile
     image: ${DOCKER_LOGIN}/vitaldata:${TAG}
+    ports:
+      - "5002:5002"
     devices:
       - "/dev/gpiochip0"
       - "/dev/verdin-uart1:/dev/verdin-uart1"
-
+      - "/dev/verdin-uart2:/dev/verdin-uart2"
